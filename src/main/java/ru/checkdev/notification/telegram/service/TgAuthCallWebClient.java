@@ -1,5 +1,7 @@
 package ru.checkdev.notification.telegram.service;
 
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -8,9 +10,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import ru.checkdev.notification.domain.Profile;
-import reactor.util.retry.Retry;
-
-import java.time.Duration;
 
 /**
  * Класс реализует методы get и post для отправки сообщений через WebClient
@@ -24,10 +23,11 @@ import java.time.Duration;
 @AllArgsConstructor
 @Slf4j
 public class TgAuthCallWebClient implements TgCall {
-    @Value("${server.auth}")
-    private String urlServiceAuth;
+    private WebClient webClient;
 
-    private WebClient createWebClientAuth;
+    public TgAuthCallWebClient(@Value("${server.auth}") String urlAuth) {
+        this.webClient = WebClient.create(urlAuth);
+    }
 
     /**
      * Метод get
@@ -35,16 +35,15 @@ public class TgAuthCallWebClient implements TgCall {
      * @param url URL http
      * @return Mono<Person>
      */
+    @Retry(name = "tgAuthRetry")
+    @CircuitBreaker(name = "tgAuthCircuitBreaker", fallbackMethod = "fallbackGet")
     @Override
     public Mono<Profile> doGet(String url) {
-        return WebClient.create(urlServiceAuth)
+        return webClient
                 .get()
                 .uri(url)
                 .retrieve()
                 .bodyToMono(Profile.class)
-                .retryWhen(
-                        Retry.fixedDelay(5, Duration.ofSeconds(1))
-                )
                 .doOnError(err -> log.error("API not found: {}", err.getMessage()));
     }
 
@@ -55,30 +54,43 @@ public class TgAuthCallWebClient implements TgCall {
      * @param profile Body PersonDTO.class
      * @return Mono<Person>
      */
+    @Retry(name = "tgAuthRetry")
+    @CircuitBreaker(name = "tgAuthCircuitBreaker", fallbackMethod = "fallbackPost")
     @Override
     public Mono<Object> doPost(String url, Profile profile) {
-        return WebClient.create(urlServiceAuth)
+        return webClient
                 .post()
                 .uri(url)
                 .bodyValue(profile)
                 .retrieve()
                 .bodyToMono(Object.class)
-                .retryWhen(
-                        Retry.fixedDelay(5, Duration.ofSeconds(1))
-                )
                 .doOnError(err -> log.error("API not found: {}", err.getMessage()));
     }
 
+    @Retry(name = "tgAuthRetry")
+    @CircuitBreaker(name = "tgAuthCircuitBreaker", fallbackMethod = "fallbackPost")
     @Override
     public Mono<Object> doPost(String url) {
-        return WebClient.create(urlServiceAuth)
+        return webClient
                 .post()
                 .uri(url)
                 .retrieve()
                 .bodyToMono(Object.class)
-                .retryWhen(
-                        Retry.fixedDelay(5, Duration.ofSeconds(1))
-                )
                 .doOnError(err -> log.error("API not found: {}", err.getMessage()));
+    }
+
+    public Mono<Profile> fallbackGet(String url, Throwable throwable) {
+        log.error("GET request failed, fallback triggered: {}", throwable.getMessage());
+        return Mono.empty();
+    }
+
+    public Mono<Object> fallbackPost(String url, Profile profile, Throwable throwable) {
+        log.error("POST request failed, fallback triggered: {}", throwable.getMessage());
+        return Mono.empty();
+    }
+
+    public Mono<Object> fallbackPost(String url, Throwable throwable) {
+        log.error("POST request failed, fallback triggered: {}", throwable.getMessage());
+        return Mono.empty();
     }
 }
